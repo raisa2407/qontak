@@ -50,33 +50,37 @@
 <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-people me-2"></i>All Users</span>
-        @if(isset($users['data']) && is_array($users['data']))
-            <span class="badge bg-primary">{{ count($users['data']) }} users</span>
-        @endif
+        @php
+            $usersList = $users['data'] ?? [];
+            $total = $users['meta']['pagination']['total'] ?? 0;
+        @endphp
+        <span class="badge bg-primary">{{ $total }} total users</span>
     </div>
     <div class="card-body p-0">
-        @if(isset($users['data']) && count($users['data']) > 0)
+        @if(count($usersList) > 0)
             <div class="table-responsive">
                 <table class="table table-hover mb-0">
-                    <thead>
+                    <thead class="table-light">
                         <tr>
                             <th>User</th>
-                            <th>Email</th>
+                            <th>Email / Phone</th>
                             <th>Role</th>
                             <th>Status</th>
-                            <th>Channels</th>
-                            <th>Created At</th>
+                            <th>Assigned</th>
+                            <th>Divisions</th>
+                            <th>Last Sign In</th>
                             <th class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        @foreach($users['data'] as $user)
+                        @foreach($usersList as $user)
                             <tr>
                                 <td>
                                     <div class="d-flex align-items-center">
                                         @if(isset($user['avatar']['url']))
                                             <img src="{{ $user['avatar']['url'] }}" alt="Avatar" 
-                                                 class="rounded-circle me-3" width="40" height="40">
+                                                 class="rounded-circle me-3" width="40" height="40"
+                                                 onerror="this.src='https://ui-avatars.com/api/?name={{ urlencode($user['full_name'] ?? 'U') }}&background=random'">
                                         @else
                                             <div class="bg-primary text-white rounded-circle d-flex align-items-center justify-content-center me-3" 
                                                  style="width: 40px; height: 40px;">
@@ -85,13 +89,18 @@
                                         @endif
                                         <div>
                                             <strong>{{ $user['full_name'] ?? 'N/A' }}</strong>
-                                            @if(isset($user['username']))
-                                                <br><small class="text-muted">@{{ $user['username'] }}</small>
-                                            @endif
+                                            <br><small class="text-muted">ID: {{ substr($user['id'] ?? '', 0, 8) }}...</small>
                                         </div>
                                     </div>
                                 </td>
-                                <td>{{ $user['email'] ?? '-' }}</td>
+                                <td>
+                                    <div>
+                                        <small class="d-block">{{ $user['email'] ?? '-' }}</small>
+                                        @if(isset($user['phone']) && $user['phone'])
+                                            <small class="text-muted">{{ $user['phone'] }}</small>
+                                        @endif
+                                    </div>
+                                </td>
                                 <td>
                                     @php
                                         $role = $user['role'] ?? 'user';
@@ -116,14 +125,27 @@
                                     @endif
                                 </td>
                                 <td>
-                                    @if(isset($user['channels']) && is_array($user['channels']))
-                                        <span class="badge bg-info">{{ count($user['channels']) }} channels</span>
+                                    <span class="badge bg-info">{{ $user['assigned_count'] ?? 0 }}</span>
+                                </td>
+                                <td>
+                                    @if(isset($user['divisions']) && count($user['divisions']) > 0)
+                                        @foreach(array_slice($user['divisions'], 0, 2) as $division)
+                                            <span class="badge bg-light text-dark">{{ $division['name'] }}</span>
+                                        @endforeach
+                                        @if(count($user['divisions']) > 2)
+                                            <span class="badge bg-light text-dark">+{{ count($user['divisions']) - 2 }}</span>
+                                        @endif
                                     @else
                                         <span class="text-muted">-</span>
                                     @endif
                                 </td>
                                 <td>
-                                    <small>{{ isset($user['created_at']) ? \Carbon\Carbon::parse($user['created_at'])->format('d M Y') : '-' }}</small>
+                                    @if(isset($user['last_sign_in_at']))
+                                        <small>{{ \Carbon\Carbon::parse($user['last_sign_in_at'])->format('d M Y') }}</small>
+                                        <br><small class="text-muted">{{ \Carbon\Carbon::parse($user['last_sign_in_at'])->diffForHumans() }}</small>
+                                    @else
+                                        <small class="text-muted">Never</small>
+                                    @endif
                                 </td>
                                 <td class="text-end">
                                     <a href="{{ route('users.show', $user['id']) }}" class="btn btn-sm btn-outline-primary">
@@ -145,22 +167,28 @@
     </div>
 </div>
 
-@if(isset($users['pagination']))
+@if(isset($users['meta']['pagination']))
+    @php
+        $pagination = $users['meta']['pagination'];
+        $currentOffset = $pagination['offset'] ?? 1;
+        $limit = $pagination['limit'] ?? 10;
+        $total = $pagination['total'] ?? 0;
+    @endphp
     <div class="card mt-3">
         <div class="card-body">
             <div class="d-flex justify-content-between align-items-center">
                 <small class="text-muted">
-                    Showing {{ $users['pagination']['offset'] ?? 0 }} of {{ $users['pagination']['total'] ?? 0 }}
+                    Showing {{ $currentOffset }} of {{ $total }} users
                 </small>
                 <div>
-                    @if(request('offset', 0) > 0)
-                        <a href="{{ route('users.index', array_merge(request()->all(), ['offset' => max(0, request('offset', 0) - request('limit', 50))])) }}" 
+                    @if(isset($pagination['cursor']['prev']))
+                        <a href="{{ route('users.index', array_merge(request()->except('offset'), ['offset' => $currentOffset - 1])) }}" 
                            class="btn btn-sm btn-outline-secondary">
                             <i class="bi bi-chevron-left"></i> Previous
                         </a>
                     @endif
-                    @if(isset($users['pagination']['total']) && (request('offset', 0) + request('limit', 50)) < $users['pagination']['total'])
-                        <a href="{{ route('users.index', array_merge(request()->all(), ['offset' => request('offset', 0) + request('limit', 50)])) }}" 
+                    @if(isset($pagination['cursor']['next']))
+                        <a href="{{ route('users.index', array_merge(request()->except('offset'), ['offset' => $currentOffset + 1])) }}" 
                            class="btn btn-sm btn-outline-secondary">
                             Next <i class="bi bi-chevron-right"></i>
                         </a>
@@ -169,5 +197,46 @@
             </div>
         </div>
     </div>
+@endif
+
+@if(count($usersList) > 0)
+<div class="row mt-4">
+    @php
+        $roleCounts = collect($usersList)->groupBy('role')->map->count();
+        $onlineCount = collect($usersList)->where('is_online', true)->count();
+    @endphp
+    <div class="col-md-3">
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <h6 class="opacity-75">Total Users</h6>
+                <h2 class="mb-0">{{ count($usersList) }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-danger text-white">
+            <div class="card-body">
+                <h6 class="opacity-75">Admins</h6>
+                <h2 class="mb-0">{{ $roleCounts['admin'] ?? 0 }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-success text-white">
+            <div class="card-body">
+                <h6 class="opacity-75">Agents</h6>
+                <h2 class="mb-0">{{ $roleCounts['agent'] ?? 0 }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card bg-info text-white">
+            <div class="card-body">
+                <h6 class="opacity-75">Online Now</h6>
+                <h2 class="mb-0">{{ $onlineCount }}</h2>
+            </div>
+        </div>
+    </div>
+</div>
 @endif
 @endsection

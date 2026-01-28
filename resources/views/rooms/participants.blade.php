@@ -12,9 +12,7 @@
 <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-people me-2"></i>Participants List</span>
-        @if(isset($participants['data']['response']))
-            <span class="badge bg-primary">{{ count($participants['data']['response']) }} participant(s)</span>
-        @elseif(isset($participants['data']) && is_array($participants['data']))
+        @if(isset($participants['data']) && is_array($participants['data']))
             <span class="badge bg-primary">{{ count($participants['data']) }} participant(s)</span>
         @else
             <span class="badge bg-secondary">0 participants</span>
@@ -23,12 +21,7 @@
     
     <div class="card-body p-0">
         @php
-            $participantsList = [];
-            if (isset($participants['data']['response'])) {
-                $participantsList = $participants['data']['response'];
-            } elseif (isset($participants['data']) && is_array($participants['data'])) {
-                $participantsList = $participants['data'];
-            }
+            $participantsList = $participants['data'] ?? [];
         @endphp
 
         @if(count($participantsList) > 0)
@@ -40,7 +33,7 @@
                             <th>Type</th>
                             <th>Status</th>
                             <th>Joined At</th>
-                            <th>Actions</th>
+                            <th>Contact ID</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -57,7 +50,7 @@
                                     @endif
                                     <div>
                                         <strong>{{ $participant['profile']['name'] ?? 'Unknown' }}</strong>
-                                        <br><small class="text-muted">ID: {{ substr($participant['id'] ?? 'N/A', 0, 18) }}...</small>
+                                        <br><small class="text-muted">{{ $participant['contact_able_type'] ?? 'N/A' }}</small>
                                     </div>
                                 </div>
                             </td>
@@ -87,7 +80,11 @@
                             <td>
                                 @php
                                     $status = $participant['active_status'] ?? 'inactive';
-                                    $statusColor = $status == 'active' ? 'success' : 'secondary';
+                                    $statusColor = match($status) {
+                                        'active' => 'success',
+                                        'kicked' => 'danger',
+                                        default => 'secondary'
+                                    };
                                 @endphp
                                 <span class="badge bg-{{ $statusColor }}">
                                     <i class="bi bi-circle-fill me-1" style="font-size: 0.5rem;"></i>
@@ -104,11 +101,9 @@
                                 </small>
                             </td>
                             <td>
-                                @if(isset($participant['contact_able_type']) && $participant['contact_able_type'] == 'Models::Contact')
-                                    <button class="btn btn-sm btn-outline-primary" title="View Contact">
-                                        <i class="bi bi-eye"></i>
-                                    </button>
-                                @endif
+                                <small class="text-muted font-monospace">
+                                    {{ $participant['contact_able_id'] ? substr($participant['contact_able_id'], 0, 18) . '...' : '-' }}
+                                </small>
                             </td>
                         </tr>
                         @endforeach
@@ -131,6 +126,8 @@
         $typeCounts = collect($participantsList)->groupBy(function($p) {
             return str_replace(['Models::', 'Participant'], '', $p['type'] ?? 'Unknown');
         })->map->count();
+        
+        $statusCounts = collect($participantsList)->groupBy('active_status')->map->count();
     @endphp
     <div class="col-md-3">
         <div class="card bg-primary text-white">
@@ -165,31 +162,21 @@
         </div>
     </div>
 </div>
-@endif
 
-@if(isset($participants['data']['pagination']))
-<div class="card mt-3">
-    <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center">
-            <div>
-                <small class="text-muted">
-                    Showing {{ $participants['data']['pagination']['offset'] ?? 0 }} 
-                    of {{ $participants['data']['pagination']['total'] ?? 0 }} total
-                </small>
+<div class="row mt-3">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h6 class="card-title">Active Participants</h6>
+                <h3 class="text-success mb-0">{{ $statusCounts['active'] ?? 0 }}</h3>
             </div>
-            <div>
-                @if(isset($participants['data']['pagination']['cursor']['prev']))
-                    <a href="{{ route('rooms.participants', ['id' => $id, 'cursor' => $participants['data']['pagination']['cursor']['prev']]) }}" 
-                       class="btn btn-sm btn-outline-secondary">
-                        <i class="bi bi-chevron-left"></i> Previous
-                    </a>
-                @endif
-                @if(isset($participants['data']['pagination']['cursor']['next']))
-                    <a href="{{ route('rooms.participants', ['id' => $id, 'cursor' => $participants['data']['pagination']['cursor']['next']]) }}" 
-                       class="btn btn-sm btn-outline-secondary">
-                        Next <i class="bi bi-chevron-right"></i>
-                    </a>
-                @endif
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h6 class="card-title">Kicked Participants</h6>
+                <h3 class="text-danger mb-0">{{ $statusCounts['kicked'] ?? 0 }}</h3>
             </div>
         </div>
     </div>
@@ -200,7 +187,6 @@
 <div class="alert alert-warning mt-3">
     <i class="bi bi-exclamation-triangle me-2"></i>
     Failed to load participants or invalid response
-    <pre class="mt-2">{{ json_encode($participants, JSON_PRETTY_PRINT) }}</pre>
 </div>
 @endif
 @endsection

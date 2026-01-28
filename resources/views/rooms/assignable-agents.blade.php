@@ -22,7 +22,7 @@
                                 <th>Agent</th>
                                 <th>Role</th>
                                 <th>Status</th>
-                                <th>Channel Count</th>
+                                <th>Assigned Count</th>
                                 <th>Action</th>
                             </tr>
                         </thead>
@@ -56,7 +56,7 @@
                                     </td>
 
                                     <td>
-                                        <span class="badge bg-light text-dark">{{ $agent['channel_count'] ?? 0 }}</span>
+                                        <span class="badge bg-light text-dark">{{ $agent['assigned_count'] ?? 0 }}</span>
                                     </td>
                                     <td>
                                         <form action="{{ route('rooms.assign-agent', [$id, $agent['id']]) }}" method="POST"

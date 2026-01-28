@@ -95,8 +95,8 @@
     <div class="col-md-3">
         <div class="card border-0 shadow-sm border-start border-info border-4">
             <div class="card-body">
-                <h6 class="text-muted mb-2">Pending Rooms</h6>
-                <h3 class="mb-0 text-info">{{ number_format($stats['pending']) }}</h3>
+                <h6 class="text-muted mb-2">Assigned Rooms</h6>
+                <h3 class="mb-0 text-info">{{ number_format($stats['assigned']) }}</h3>
             </div>
         </div>
     </div>

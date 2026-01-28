@@ -4,16 +4,21 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class RoomController extends Controller
 {
     private $base_url;
+    private $core_url;
     private $api_token;
+    private $organization_id;
 
     public function __construct()
     {
         $this->base_url = env('QONTAK_BASE_URL', 'https://service-chat.qontak.com/api/open');
+        $this->core_url = env('QONTAK_CORE_URL', 'https://chat-service.qontak.com/api/core/v1');
         $this->api_token = env('QONTAK_API_TOKEN');
+        $this->organization_id = env('QONTAK_ORGANIZATION_ID', 'bb315b54-030f-4e51-8583-8c4aec379964');
     }
 
     private function getHeaders()
@@ -43,15 +48,62 @@ class RoomController extends Controller
             'limit'
         ]));
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . '/v1/rooms', $params);
 
         $rooms = $response->json();
-        return view('rooms.index', compact('rooms'));
+
+        /** @var \Illuminate\Http\Client\Response $autoTakeoverResponse */
+        $autoTakeoverResponse = Http::withHeaders($this->getHeaders())
+            ->get($this->base_url . '/v1/rooms/auto_takeover/agents/assignable');
+
+        $autoTakeoverAgents = $autoTakeoverResponse->json();
+
+        $agentId = "7180a56b-27d6-4cbc-85d9-55b0edc9c0c6";
+        $now = now();
+        $twentyFourHoursAgo = $now->copy()->subHours(24);
+        $assignedRoomIds = session()->get('assigned_room_ids', []);
+
+        if (isset($rooms['data']) && is_array($rooms['data'])) {
+            foreach ($rooms['data'] as $room) {
+                if (in_array($room['id'], $assignedRoomIds)) {
+                    continue;
+                }
+
+                $roomCreatedAt = isset($room['created_at']) ? \Carbon\Carbon::parse($room['created_at']) : null;
+
+                $hasNoAgent = !isset($room['user_id']) || empty($room['user_id']);
+
+                if ($roomCreatedAt && $roomCreatedAt->greaterThanOrEqualTo($twentyFourHoursAgo) && $hasNoAgent) {
+                    /** @var \Illuminate\Http\Client\Response $assignResponse */
+                    $assignResponse = Http::withHeaders($this->getHeaders())
+                        ->post($this->base_url . "/v1/rooms/{$room['id']}/agents/{$agentId}");
+
+                    if ($assignResponse->successful()) {
+                        $assignedRoomIds[] = $room['id'];
+                        session()->put('assigned_room_ids', $assignedRoomIds);
+                    }
+
+                    Log::info('Room Assignment (24h)', [
+                        'room_id' => $room['id'],
+                        'agent_id' => $agentId,
+                        'has_user_id' => isset($room['user_id']),
+                        'user_id_value' => $room['user_id'] ?? null,
+                        'created_at' => $roomCreatedAt->toDateTimeString(),
+                        'status' => $assignResponse->status(),
+                        'response' => $assignResponse->json()
+                    ]);
+                }
+            }
+        }
+
+        return view('rooms.index', compact('rooms', 'autoTakeoverAgents'));
     }
 
     public function show($id)
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . "/v1/rooms/{$id}");
 
@@ -63,6 +115,7 @@ class RoomController extends Controller
     {
         $request->validate(['name' => 'required|string']);
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->asMultipart()
             ->put($this->base_url . "/v1/rooms/{$id}", [
@@ -74,6 +127,7 @@ class RoomController extends Controller
 
     public function histories($id)
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . "/v1/rooms/{$id}/histories");
 
@@ -83,22 +137,52 @@ class RoomController extends Controller
 
     public function participants($id, Request $request)
     {
-        $params = array_filter($request->only(['offset', 'limit']));
+        $url = $this->base_url . "/v1/rooms/{$id}/participants";
 
-        if (empty($params['limit'])) {
-            $params['limit'] = 100;
+        try {
+            /** @var \Illuminate\Http\Client\Response $response */
+            $response = Http::withHeaders($this->getHeaders())->get($url);
+
+            Log::info('Participants API Response', [
+                'status' => $response->status(),
+                'body' => $response->body(),
+                'url' => $url
+            ]);
+
+            if (!$response->successful()) {
+                return view('rooms.participants', [
+                    'participants' => [
+                        'status' => 'error',
+                        'data' => [],
+                        'http_status' => $response->status(),
+                        'error_body' => $response->body()
+                    ],
+                    'id' => $id
+                ]);
+            }
+
+            $participants = $response->json();
+            return view('rooms.participants', compact('participants', 'id'));
+        } catch (\Exception $e) {
+            Log::error('Exception in participants', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return view('rooms.participants', [
+                'participants' => [
+                    'status' => 'error',
+                    'data' => [],
+                    'exception' => $e->getMessage()
+                ],
+                'id' => $id
+            ]);
         }
-
-        $response = Http::withHeaders($this->getHeaders())
-            ->get($this->base_url . "/v1/rooms/{$id}/participants", $params);
-
-        $participants = $response->json();
-
-        return view('rooms.participants', compact('participants', 'id'));
     }
 
     public function specificInfo()
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . '/v1/rooms/specific/info');
 
@@ -108,6 +192,7 @@ class RoomController extends Controller
 
     public function assignableAgents($id)
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . "/v1/rooms/{$id}/agents/assignable");
 
@@ -126,47 +211,90 @@ class RoomController extends Controller
 
     public function assignAgent(Request $request, $id, $userId)
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->post($this->base_url . "/v1/rooms/{$id}/agents/{$userId}");
 
         return back()->with('success', 'Agent assigned successfully!');
     }
 
-    public function autoTakeover()
+    // public function autoTakeover(Request $request)
+    // {
+    //     $agentId = $request->input('agent_id');
+    //
+    //     if ($agentId) {
+    //         $response = Http::withHeaders($this->getHeaders())
+    //             ->post($this->base_url . '/v1/rooms/auto_takeover', [
+    //                 'agent_id' => $agentId
+    //             ]);
+    //
+    //         $agentName = $request->input('agent_name', 'selected agent');
+    //         return back()->with('success', 'Room auto takeover successful to ' . $agentName . '!');
+    //     }
+    //
+    //     $response = Http::withHeaders($this->getHeaders())
+    //         ->get($this->base_url . '/v1/rooms/auto_takeover/agents/assignable');
+    //
+    //     $agents = $response->json();
+    //
+    //     if (isset($agents['data']) && count($agents['data']) > 0) {
+    //         $bestAgent = collect($agents['data'])
+    //             ->where('is_online', true)
+    //             ->map(function ($agent) {
+    //                 $agent['channel_count'] = count($agent['channels'] ?? []);
+    //                 return $agent;
+    //             })
+    //             ->sortBy('channel_count')
+    //             ->first();
+    //
+    //         if ($bestAgent) {
+    //             Http::withHeaders($this->getHeaders())
+    //                 ->post($this->base_url . '/v1/rooms/auto_takeover', [
+    //                     'agent_id' => $bestAgent['id']
+    //                 ]);
+    //
+    //             return back()->with('success', 'Room auto takeover successful to ' . $bestAgent['full_name'] . '!');
+    //         }
+    //     }
+    //
+    //     $response = Http::withHeaders($this->getHeaders())
+    //         ->post($this->base_url . '/v1/rooms/auto_takeover');
+    //
+    //     return back()->with('success', 'Room auto takeover successful!');
+    // }
+
+    public function listExpired(Request $request)
     {
+        $params = array_filter($request->only([
+            'query',
+            'status',
+            'sessions',
+            'tags',
+            'user_ids',
+            'target_channel',
+            'untagged',
+            'response_status',
+            'type',
+            'start_date',
+            'end_date',
+            'time_offsets',
+            'offset',
+            'limit'
+        ]));
+
+        $params['status'] = 'expired';
+
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
-            ->get($this->base_url . '/v1/rooms/auto_takeover/agents/assignable');
+            ->get($this->base_url . '/v1/rooms/list/expired', $params);
 
-        $agents = $response->json();
-
-        if (isset($agents['data']) && count($agents['data']) > 0) {
-            $bestAgent = collect($agents['data'])
-                ->where('is_online', true)
-                ->map(function ($agent) {
-                    $agent['channel_count'] = count($agent['channels'] ?? []);
-                    return $agent;
-                })
-                ->sortBy('channel_count')
-                ->first();
-
-            if ($bestAgent) {
-                Http::withHeaders($this->getHeaders())
-                    ->post($this->base_url . '/v1/rooms/auto_takeover', [
-                        'agent_id' => $bestAgent['id']
-                    ]);
-
-                return back()->with('success', 'Room auto takeover successful to ' . $bestAgent['full_name'] . '!');
-            }
-        }
-
-        $response = Http::withHeaders($this->getHeaders())
-            ->post($this->base_url . '/v1/rooms/auto_takeover');
-
-        return back()->with('success', 'Room auto takeover successful!');
+        $rooms = $response->json();
+        return view('rooms.expired', compact('rooms'));
     }
 
     public function takeover($id)
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . "/v1/rooms/{$id}/agents/assignable");
 
@@ -190,23 +318,16 @@ class RoomController extends Controller
             }
         }
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->post($this->base_url . "/v1/rooms/{$id}/takeover");
 
         return back()->with('success', 'Room takeover successful!');
     }
 
-    public function listExpired()
-    {
-        $response = Http::withHeaders($this->getHeaders())
-            ->get($this->base_url . '/v1/rooms/list/expired');
-
-        $rooms = $response->json();
-        return view('rooms.expired', compact('rooms'));
-    }
-
     public function markAllAsRead($id)
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->put($this->base_url . "/v1/rooms/{$id}/mark_all_as_read");
 
@@ -215,6 +336,7 @@ class RoomController extends Controller
 
     public function handover($id, $userId)
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->post($this->base_url . "/v1/rooms/{$id}/handover/{$userId}");
 
@@ -223,6 +345,7 @@ class RoomController extends Controller
 
     public function resolveExpired()
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->put($this->base_url . '/v1/rooms/resolve_expired');
 
@@ -231,6 +354,7 @@ class RoomController extends Controller
 
     public function resolve($id)
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->put($this->base_url . "/v1/rooms/{$id}/resolve");
 
@@ -241,6 +365,7 @@ class RoomController extends Controller
     {
         $request->validate(['tags' => 'required']);
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->post($this->base_url . "/v1/rooms/{$id}/tags", [
                 'tags' => $request->tags
@@ -251,6 +376,7 @@ class RoomController extends Controller
 
     public function removeTag(Request $request, $id)
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->delete($this->base_url . "/v1/rooms/{$id}/tags", [
                 'tags' => $request->tags
@@ -262,25 +388,49 @@ class RoomController extends Controller
     public function messages($id, Request $request)
     {
         $params = [
-            'limit' => $request->input('limit', 50),
-            'offset' => $request->input('offset', 0),
-            'order_by' => 'created_at',
-            'order_direction' => 'asc'
+            'limit' => $request->input('limit', 15),
+            'offset' => $request->input('offset', 1),
+            'cursor' => $request->input('cursor', '')
         ];
 
-        $response = Http::withHeaders($this->getHeaders())
-            ->get($this->base_url . "/v1/rooms/{$id}/messages", $params);
+        $url = $this->core_url . '/' . $this->organization_id . '/messages/rooms/' . $id;
 
-        if (!$response->successful()) {
+        try {
+            /** @var \Illuminate\Http\Client\Response $response */
+            $response = Http::withHeaders($this->getHeaders())
+                ->get($url, $params);
+
+            Log::info('Messages API Response', [
+                'status' => $response->status(),
+                'url' => $url,
+                'params' => $params
+            ]);
+
+            if (!$response->successful()) {
+                return view('rooms.messages', [
+                    'messages' => ['data' => []],
+                    'id' => $id
+                ]);
+            }
+
+            $messages = $response->json();
+
+            if (isset($messages['data']) && is_array($messages['data'])) {
+                $messages['data'] = array_reverse($messages['data']);
+            }
+
+            return view('rooms.messages', compact('messages', 'id'));
+        } catch (\Exception $e) {
+            Log::error('Exception in messages', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
             return view('rooms.messages', [
                 'messages' => ['data' => []],
                 'id' => $id
             ]);
         }
-
-        $messages = $response->json();
-
-        return view('rooms.messages', compact('messages', 'id'));
     }
 
     public function sendMessage(Request $request, $id)
@@ -290,6 +440,7 @@ class RoomController extends Controller
             'type' => 'nullable|string|in:text,image,video,audio,document,voice'
         ]);
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->post($this->base_url . "/v1/rooms/{$id}/messages", [
                 'message' => $request->message,
@@ -332,6 +483,7 @@ class RoomController extends Controller
             ];
         }
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->asMultipart()
             ->post($this->base_url . '/v1/messages/whatsapp', $multipart);
@@ -372,6 +524,7 @@ class RoomController extends Controller
             ];
         }
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->asMultipart()
             ->post($this->base_url . '/v1/messages/whatsapp/bot', $multipart);
@@ -394,6 +547,7 @@ class RoomController extends Controller
         $payload = $request->all();
         $payload['room_id'] = $id;
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->post($this->base_url . '/v1/messages/whatsapp/interactive_message/bot', $payload);
 
@@ -415,6 +569,7 @@ class RoomController extends Controller
             ['name' => 'message_template_id', 'contents' => $request->message_template_id],
         ];
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->asMultipart()
             ->post($this->base_url . '/v1/messages/whatsapp/hsm', $multipart);
@@ -428,6 +583,7 @@ class RoomController extends Controller
 
     public function showMessageInteractions()
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . '/v1/message_interactions');
 
@@ -457,6 +613,7 @@ class RoomController extends Controller
             $multipart[] = ['name' => 'url', 'contents' => $request->url];
         }
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->asMultipart()
             ->put($this->base_url . '/v1/message_interactions', $multipart);
@@ -470,6 +627,7 @@ class RoomController extends Controller
 
     public function showRoomInteractions()
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . '/v1/room_interactions');
 
@@ -493,6 +651,7 @@ class RoomController extends Controller
             $multipart[] = ['name' => 'url', 'contents' => $request->url];
         }
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->asMultipart()
             ->put($this->base_url . '/v1/room_interactions', $multipart);
@@ -506,6 +665,7 @@ class RoomController extends Controller
 
     public function getMessageInteractions()
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . '/v1/message_interactions');
 
@@ -518,6 +678,7 @@ class RoomController extends Controller
 
     public function getRoomInteractions()
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . '/v1/room_interactions');
 

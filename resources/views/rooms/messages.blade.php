@@ -25,48 +25,36 @@
             <div class="card" style="height: calc(100vh - 250px);">
                 <div class="card-header bg-success text-white">
                     <i class="bi bi-chat-left-text me-2"></i>Messages
-                    @if (isset($messages['data']['pagination']['total']))
-                        <span class="badge bg-light text-dark ms-2">{{ $messages['data']['pagination']['total'] }}
-                            total</span>
+                    @if (isset($messages['meta']['pagination']['total']))
+                        <span class="badge bg-light text-dark ms-2">{{ $messages['meta']['pagination']['total'] }} total</span>
                     @endif
                 </div>
 
                 <div class="card-body p-0 overflow-auto" id="messageContainer" style="height: calc(100% - 140px);">
-                    @php
-                        $messagesList = [];
-                        if (isset($messages['data']) && is_array($messages['data'])) {
-                            foreach ($messages['data'] as $room) {
-                                if (isset($room['text'])) {
-                                    $messagesList[] = $room['text'];
-                                }
-                            }
-                        }
-                    @endphp
-
-                    @if (count($messagesList) > 0)
+                    @if (isset($messages['data']) && count($messages['data']) > 0)
                         <div class="p-3">
-                            @foreach ($messagesList as $message)
+                            @foreach ($messages['data'] as $message)
                                 @php
                                     $isAgent = in_array($message['participant_type'] ?? '', ['agent', 'bot', 'system']);
                                     $alignmentClass = $isAgent ? 'justify-content-end' : 'justify-content-start';
                                     $bgClass = $isAgent ? 'bg-primary text-white' : 'bg-light';
                                     $participantType = $message['participant_type'] ?? 'unknown';
                                     $messageType = $message['type'] ?? 'text';
+                                    $senderName = $message['sender']['name'] ?? 'Unknown';
                                 @endphp
 
-                                <div class="d-flex {{ $alignmentClass }} mb-3">
+                                <div class="d-flex {{ $alignmentClass }} mb-3 message-bubble">
                                     <div style="max-width: 70%;">
-                                        <div
-                                            class="d-flex align-items-center mb-1 {{ $isAgent ? 'justify-content-end' : '' }}">
+                                        <div class="d-flex align-items-center mb-1 {{ $isAgent ? 'justify-content-end' : '' }}">
                                             <small class="text-muted">
                                                 @if ($participantType == 'agent')
-                                                    <i class="bi bi-person-badge"></i> Agent
+                                                    <i class="bi bi-person-badge"></i> {{ $senderName }}
                                                 @elseif($participantType == 'bot')
-                                                    <i class="bi bi-robot"></i> Bot
+                                                    <i class="bi bi-robot"></i> {{ $senderName }}
                                                 @elseif($participantType == 'system')
-                                                    <i class="bi bi-gear"></i> System
+                                                    <i class="bi bi-gear"></i> {{ $senderName }}
                                                 @else
-                                                    <i class="bi bi-person"></i> Customer
+                                                    <i class="bi bi-person"></i> {{ $senderName }}
                                                 @endif
                                             </small>
                                         </div>
@@ -74,22 +62,35 @@
                                         <div class="p-3 rounded {{ $bgClass }}" style="word-wrap: break-word;">
                                             @if ($messageType == 'text')
                                                 {!! nl2br(e($message['text'] ?? 'No text content')) !!}
+                                                
+                                                @if (isset($message['buttons']) && count($message['buttons']) > 0)
+                                                    <div class="mt-3 pt-2 border-top">
+                                                        @foreach ($message['buttons'] as $button)
+                                                            @if ($button['type'] == 'LIST_BUTTON')
+                                                                <div class="badge bg-secondary mb-1">{{ $button['text'] }}</div>
+                                                            @elseif($button['type'] == 'LIST_ROW')
+                                                                <div class="small mt-1">• {{ $button['title'] }}</div>
+                                                            @endif
+                                                        @endforeach
+                                                    </div>
+                                                @endif
                                             @elseif($messageType == 'image')
                                                 @if (isset($message['file']['url']))
-                                                    <img src="{{ $message['file']['url'] }}" class="img-fluid rounded mb-2"
-                                                        style="max-width: 300px;" alt="Image">
+                                                    <img src="{{ $message['file']['url'] }}" class="img-fluid rounded mb-2" style="max-width: 300px;" alt="Image">
                                                 @endif
-                                                @if (isset($message['caption']))
-                                                    <div class="mt-2">{{ $message['caption'] }}</div>
+                                                @if (isset($message['text']) && $message['text'])
+                                                    <div class="mt-2">{!! nl2br(e($message['text'])) !!}</div>
                                                 @endif
                                             @elseif($messageType == 'document')
                                                 <div>
                                                     <i class="bi bi-file-earmark-text fs-1"></i>
                                                     <div class="mt-2">
                                                         <strong>{{ $message['file']['filename'] ?? 'Document' }}</strong>
+                                                        @if (isset($message['file']['size']))
+                                                            <br><small>{{ round($message['file']['size'] / 1024, 2) }} KB</small>
+                                                        @endif
                                                         @if (isset($message['file']['url']))
-                                                            <br><a href="{{ $message['file']['url'] }}" target="_blank"
-                                                                class="text-white text-decoration-underline">Download</a>
+                                                            <br><a href="{{ $message['file']['url'] }}" target="_blank" class="text-white text-decoration-underline">Download</a>
                                                         @endif
                                                     </div>
                                                 </div>
@@ -105,15 +106,20 @@
                                                         <source src="{{ $message['file']['url'] }}" type="audio/mpeg">
                                                     </audio>
                                                 @endif
+                                            @elseif($messageType == 'system')
+                                                <div class="text-center">
+                                                    <i class="bi bi-info-circle me-1"></i>
+                                                    {{ $message['text'] ?? 'System message' }}
+                                                </div>
                                             @else
                                                 <span class="badge bg-secondary">{{ strtoupper($messageType) }}</span>
                                                 <div class="mt-2">{{ $message['text'] ?? 'No preview available' }}</div>
                                             @endif
 
-                                            @if (isset($message['status']))
+                                            @if (isset($message['status']) && !in_array($participantType, ['system']))
                                                 <div class="mt-2 text-end">
                                                     <small>
-                                                        @if ($message['status'] == 'sent')
+                                                        @if ($message['status'] == 'sent' || $message['status'] == 'created')
                                                             <i class="bi bi-check"></i>
                                                         @elseif($message['status'] == 'delivered')
                                                             <i class="bi bi-check-all"></i>
@@ -127,7 +133,7 @@
 
                                         <div class="mt-1 {{ $isAgent ? 'text-end' : '' }}">
                                             <small class="text-muted">
-                                                {{ isset($message['created_at']) ? \Carbon\Carbon::parse($message['created_at'])->format('H:i') : '' }}
+                                                {{ isset($message['created_at']) ? \Carbon\Carbon::parse($message['created_at'])->format('d M Y H:i') : '' }}
                                             </small>
                                         </div>
                                     </div>
@@ -146,18 +152,15 @@
                 </div>
 
                 <div class="card-footer bg-white border-top p-3">
-                    <form action="{{ route('rooms.send-whatsapp', $id) }}" method="POST" enctype="multipart/form-data"
-                        id="messageForm">
+                    <form action="{{ route('rooms.send-whatsapp', $id) }}" method="POST" enctype="multipart/form-data" id="messageForm">
                         @csrf
 
                         <div class="input-group">
-                            <button class="btn btn-outline-secondary" type="button"
-                                onclick="document.getElementById('fileInput').click()">
+                            <button class="btn btn-outline-secondary" type="button" onclick="document.getElementById('fileInput').click()">
                                 <i class="bi bi-paperclip"></i>
                             </button>
 
-                            <select class="form-select" name="type" id="messageType" style="max-width: 120px;"
-                                onchange="handleTypeChange(this)">
+                            <select class="form-select" name="type" id="messageType" style="max-width: 120px;" onchange="handleTypeChange(this)">
                                 <option value="text">Text</option>
                                 <option value="image">Image</option>
                                 <option value="video">Video</option>
@@ -166,11 +169,9 @@
                                 <option value="voice">Voice</option>
                             </select>
 
-                            <input type="text" class="form-control" name="text" id="messageText"
-                                placeholder="Type your message..." autocomplete="off" required>
+                            <input type="text" class="form-control" name="text" id="messageText" placeholder="Type your message..." autocomplete="off" required>
 
-                            <input type="file" class="d-none" name="file" id="fileInput" accept="*/*"
-                                onchange="handleFileSelect(this)">
+                            <input type="file" class="d-none" name="file" id="fileInput" accept="*/*" onchange="handleFileSelect(this)">
 
                             <button class="btn btn-success" type="submit">
                                 <i class="bi bi-send-fill"></i>
@@ -206,8 +207,7 @@
                     <div class="modal-body">
                         <div class="mb-3">
                             <label class="form-label">Message Type</label>
-                            <select class="form-select" name="type" id="botMessageType" required
-                                onchange="handleBotTypeChange(this)">
+                            <select class="form-select" name="type" id="botMessageType" required onchange="handleBotTypeChange(this)">
                                 <option value="text">Text</option>
                                 <option value="image">Image</option>
                                 <option value="video">Video</option>
@@ -266,20 +266,17 @@
 
                         <div class="mb-3">
                             <label class="form-label">Body Text</label>
-                            <textarea class="form-control" name="interactive[body]" rows="3" required
-                                placeholder="Enter the main message body..."></textarea>
+                            <textarea class="form-control" name="interactive[body]" rows="3" required placeholder="Enter the main message body..."></textarea>
                         </div>
 
                         <div class="mb-3">
                             <label class="form-label">Header (Optional)</label>
-                            <input type="text" class="form-control" name="interactive[header]"
-                                placeholder="Header text...">
+                            <input type="text" class="form-control" name="interactive[header]" placeholder="Header text...">
                         </div>
 
                         <div class="mb-3">
                             <label class="form-label">Footer (Optional)</label>
-                            <input type="text" class="form-control" name="interactive[footer]"
-                                placeholder="Footer text...">
+                            <input type="text" class="form-control" name="interactive[footer]" placeholder="Footer text...">
                         </div>
 
                         <div class="alert alert-info">
@@ -314,8 +311,7 @@
                     <div class="modal-body">
                         <div class="mb-3">
                             <label class="form-label">Message Template ID</label>
-                            <input type="text" class="form-control" name="message_template_id" required
-                                placeholder="Enter template ID...">
+                            <input type="text" class="form-control" name="message_template_id" required placeholder="Enter template ID...">
                             <small class="text-muted">Enter the approved WhatsApp message template ID</small>
                         </div>
 
@@ -378,7 +374,6 @@
 
 @push('scripts')
     <script>
-        // Auto scroll to bottom on load
         window.addEventListener('load', function() {
             const container = document.getElementById('messageContainer');
             if (container) {
@@ -386,7 +381,6 @@
             }
         });
 
-        // Handle message type change
         function handleTypeChange(select) {
             const messageText = document.getElementById('messageText');
             const fileInput = document.getElementById('fileInput');
@@ -402,7 +396,6 @@
             }
         }
 
-        // Handle file selection
         function handleFileSelect(input) {
             if (input.files && input.files.length > 0) {
                 const file = input.files[0];
@@ -410,17 +403,14 @@
                 const filePreview = document.getElementById('filePreview');
                 const messageType = document.getElementById('messageType');
 
-                // Show file name
                 if (fileName) {
                     fileName.textContent = file.name;
                 }
 
-                // Show preview
                 if (filePreview) {
                     filePreview.style.display = 'block';
                 }
 
-                // Auto-detect file type if currently set to text
                 if (messageType && messageType.value === 'text') {
                     const ext = file.name.split('.').pop().toLowerCase();
 
@@ -439,7 +429,6 @@
             }
         }
 
-        // Remove file
         function removeFile() {
             const fileInput = document.getElementById('fileInput');
             const filePreview = document.getElementById('filePreview');

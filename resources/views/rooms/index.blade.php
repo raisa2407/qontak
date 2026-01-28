@@ -12,14 +12,14 @@
         </div>
         <div class="col-md-3">
             <div class="stat-card" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
-                <div class="stat-label">Active</div>
-                <div class="stat-value">{{ collect($rooms['data'] ?? [])->where('status', 'active')->count() }}</div>
+                <div class="stat-label">Assigned</div>
+                <div class="stat-value">{{ collect($rooms['data'] ?? [])->where('status', 'assigned')->count() }}</div>
             </div>
         </div>
         <div class="col-md-3">
             <div class="stat-card" style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);">
-                <div class="stat-label">Pending</div>
-                <div class="stat-value">{{ collect($rooms['data'] ?? [])->where('status', 'pending')->count() }}</div>
+                <div class="stat-label">Unassigned</div>
+                <div class="stat-value">{{ collect($rooms['data'] ?? [])->where('status', 'unassigned')->count() }}</div>
             </div>
         </div>
         <div class="col-md-3">
