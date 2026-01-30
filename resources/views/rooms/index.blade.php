@@ -180,8 +180,8 @@
                                         @php
                                             $status = $room['status'] ?? 'unknown';
                                             $badgeClass = match ($status) {
-                                                'active' => 'success',
-                                                'pending' => 'warning',
+                                                'assigned' => 'success',
+                                                'unassigned' => 'warning',
                                                 'resolved' => 'secondary',
                                                 default => 'info',
                                             };

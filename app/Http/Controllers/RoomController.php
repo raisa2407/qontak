@@ -5,6 +5,9 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Services\RoomService;
+use App\Services\AutoReplyService;
+use App\Models\QontakRoom;
 
 class RoomController extends Controller
 {
@@ -12,13 +15,17 @@ class RoomController extends Controller
     private $core_url;
     private $api_token;
     private $organization_id;
+    private $roomService;
+    private $autoReplyService;
 
-    public function __construct()
+    public function __construct(RoomService $roomService, AutoReplyService $autoReplyService)
     {
         $this->base_url = env('QONTAK_BASE_URL', 'https://service-chat.qontak.com/api/open');
         $this->core_url = env('QONTAK_CORE_URL', 'https://chat-service.qontak.com/api/core/v1');
         $this->api_token = env('QONTAK_API_TOKEN');
         $this->organization_id = env('QONTAK_ORGANIZATION_ID', 'bb315b54-030f-4e51-8583-8c4aec379964');
+        $this->roomService = $roomService;
+        $this->autoReplyService = $autoReplyService;
     }
 
     private function getHeaders()
@@ -54,51 +61,155 @@ class RoomController extends Controller
 
         $rooms = $response->json();
 
-        /** @var \Illuminate\Http\Client\Response $autoTakeoverResponse */
         $autoTakeoverResponse = Http::withHeaders($this->getHeaders())
             ->get($this->base_url . '/v1/rooms/auto_takeover/agents/assignable');
-
         $autoTakeoverAgents = $autoTakeoverResponse->json();
 
-        $agentId = "7180a56b-27d6-4cbc-85d9-55b0edc9c0c6";
-        $now = now();
-        $twentyFourHoursAgo = $now->copy()->subHours(24);
-        $assignedRoomIds = session()->get('assigned_room_ids', []);
+        $agentId = env('QONTAK_AGENT_ID', '7180a56b-27d6-4cbc-85d9-55b0edc9c0c6');
 
-        if (isset($rooms['data']) && is_array($rooms['data'])) {
-            foreach ($rooms['data'] as $room) {
-                if (in_array($room['id'], $assignedRoomIds)) {
-                    continue;
-                }
+        Log::info('[INDEX] Starting auto-assign check', [
+            'agent_id' => $agentId,
+            'timestamp' => now()->toDateTimeString()
+        ]);
 
-                $roomCreatedAt = isset($room['created_at']) ? \Carbon\Carbon::parse($room['created_at']) : null;
+        $result = $this->roomService->autoAssignRooms($agentId);
 
-                $hasNoAgent = !isset($room['user_id']) || empty($room['user_id']);
+        Log::info('[INDEX] Auto-assign result', [
+            'assigned' => $result['assigned'],
+            'errors' => count($result['errors'])
+        ]);
 
-                if ($roomCreatedAt && $roomCreatedAt->greaterThanOrEqualTo($twentyFourHoursAgo) && $hasNoAgent) {
-                    /** @var \Illuminate\Http\Client\Response $assignResponse */
-                    $assignResponse = Http::withHeaders($this->getHeaders())
-                        ->post($this->base_url . "/v1/rooms/{$room['id']}/agents/{$agentId}");
+        if ($result['assigned'] > 0) {
+            session()->flash('success', "Successfully assigned {$result['assigned']} rooms to agent.");
+        }
 
-                    if ($assignResponse->successful()) {
-                        $assignedRoomIds[] = $room['id'];
-                        session()->put('assigned_room_ids', $assignedRoomIds);
-                    }
-
-                    Log::info('Room Assignment (24h)', [
-                        'room_id' => $room['id'],
-                        'agent_id' => $agentId,
-                        'has_user_id' => isset($room['user_id']),
-                        'user_id_value' => $room['user_id'] ?? null,
-                        'created_at' => $roomCreatedAt->toDateTimeString(),
-                        'status' => $assignResponse->status(),
-                        'response' => $assignResponse->json()
-                    ]);
-                }
-            }
+        if (!empty($result['errors'])) {
+            session()->flash('warning', 'Some rooms failed to assign: ' . implode(', ', $result['errors']));
         }
 
         return view('rooms.index', compact('rooms', 'autoTakeoverAgents'));
+    }
+
+    public function messages($id, Request $request)
+    {
+        Log::info('[ROOM MESSAGES] Page loaded', [
+            'room_id' => $id,
+            'timestamp' => now()->toDateTimeString()
+        ]);
+
+        $params = [
+            'limit' => $request->input('limit', 15),
+            'offset' => $request->input('offset', 1),
+            'cursor' => $request->input('cursor', '')
+        ];
+
+        $url = $this->core_url . '/' . $this->organization_id . '/messages/rooms/' . $id;
+
+        try {
+            $response = Http::withHeaders($this->getHeaders())
+                ->get($url, $params);
+
+            Log::info('[ROOM MESSAGES] Messages API Response', [
+                'status' => $response->status(),
+                'url' => $url,
+                'params' => $params
+            ]);
+
+            if (!$response->successful()) {
+                Log::error('[ROOM MESSAGES] Failed to fetch messages', [
+                    'status' => $response->status(),
+                    'response' => $response->body()
+                ]);
+
+                return view('rooms.messages', [
+                    'messages' => ['data' => []],
+                    'id' => $id
+                ]);
+            }
+
+            $messages = $response->json();
+
+            if (isset($messages['data']) && is_array($messages['data'])) {
+                $messages['data'] = array_reverse($messages['data']);
+            }
+
+            $this->roomService->syncRoomFromApi($id);
+
+            Log::info('[ROOM MESSAGES] Starting auto-reply check for recent messages');
+            $this->processAutoReplyForRoom($id, $messages);
+
+            return view('rooms.messages', compact('messages', 'id'));
+        } catch (\Exception $e) {
+            Log::error('[ROOM MESSAGES] Exception in messages', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return view('rooms.messages', [
+                'messages' => ['data' => []],
+                'id' => $id
+            ]);
+        }
+    }
+
+    private function processAutoReplyForRoom($roomId, $messages)
+    {
+        Log::info('[ROOM MESSAGES] Processing auto-reply for room', [
+            'room_id' => $roomId,
+            'total_messages' => isset($messages['data']) ? count($messages['data']) : 0
+        ]);
+
+        if (!isset($messages['data']) || !is_array($messages['data'])) {
+            Log::info('[ROOM MESSAGES] No messages to process');
+            return;
+        }
+
+        $processedCount = 0;
+        $fiveMinutesAgo = now()->subMinutes(5);
+
+        foreach ($messages['data'] as $message) {
+            $participantType = $message['participant_type'] ?? 'unknown';
+            $messageText = $message['text'] ?? '';
+            $messageId = $message['id'] ?? null;
+
+            if (in_array($participantType, ['agent', 'bot', 'system'])) {
+                continue;
+            }
+
+            $messageCreatedAt = isset($message['created_at'])
+                ? \Carbon\Carbon::parse($message['created_at'])
+                : null;
+
+            if (!$messageCreatedAt || $messageCreatedAt->lessThan($fiveMinutesAgo)) {
+                continue;
+            }
+
+            Log::info('[ROOM MESSAGES] Recent customer message found', [
+                'room_id' => $roomId,
+                'message_id' => $messageId,
+                'text' => substr($messageText, 0, 50)
+            ]);
+
+            $result = $this->autoReplyService->processMessage(
+                $roomId,
+                $messageText,
+                $messageId,
+                $message['sender']['phone'] ?? null
+            );
+
+            if ($result) {
+                $processedCount++;
+                Log::info('[ROOM MESSAGES] Auto-reply sent', [
+                    'message_id' => $messageId,
+                    'total_processed' => $processedCount
+                ]);
+            }
+        }
+
+        Log::info('[ROOM MESSAGES] Auto-reply processing complete', [
+            'room_id' => $roomId,
+            'total_processed' => $processedCount
+        ]);
     }
 
     public function show($id)
@@ -108,7 +219,47 @@ class RoomController extends Controller
             ->get($this->base_url . "/v1/rooms/{$id}");
 
         $room = $response->json();
+        $this->roomService->syncRoomFromApi($id);
+
         return view('rooms.show', compact('room', 'id'));
+    }
+
+    public function assignAgent(Request $request, $id, $userId)
+    {
+        Log::info('[ASSIGN AGENT] Manual assignment request', [
+            'room_id' => $id,
+            'user_id' => $userId
+        ]);
+
+        /** @var \Illuminate\Http\Client\Response $response */
+        $response = Http::withHeaders($this->getHeaders())
+            ->post($this->base_url . "/v1/rooms/{$id}/agents/{$userId}");
+
+        if ($response->successful()) {
+            QontakRoom::updateOrCreate(
+                ['room_id' => $id],
+                [
+                    'agent_id' => $userId,
+                    'is_assigned' => true,
+                    'assigned_at' => now(),
+                ]
+            );
+
+            Log::info('[ASSIGN AGENT] Agent assigned successfully', [
+                'room_id' => $id,
+                'agent_id' => $userId
+            ]);
+
+            return back()->with('success', 'Agent assigned successfully!');
+        }
+
+        Log::error('[ASSIGN AGENT] Failed to assign agent', [
+            'room_id' => $id,
+            'status' => $response->status(),
+            'response' => $response->body()
+        ]);
+
+        return back()->with('error', 'Failed to assign agent: ' . $response->body());
     }
 
     public function rename(Request $request, $id)
@@ -209,14 +360,15 @@ class RoomController extends Controller
         return view('rooms.assignable-agents', compact('agents', 'id'));
     }
 
-    public function assignAgent(Request $request, $id, $userId)
-    {
-        /** @var \Illuminate\Http\Client\Response $response */
-        $response = Http::withHeaders($this->getHeaders())
-            ->post($this->base_url . "/v1/rooms/{$id}/agents/{$userId}");
+    // public function assignAgent(Request $request, $id, $userId)
+    // {
+    //     /** @var \Illuminate\Http\Client\Response $response */
+    //     $response = Http::withHeaders($this->getHeaders())
+    //         ->post($this->base_url . "/v1/rooms/{$id}/agents/{$userId}");
 
-        return back()->with('success', 'Agent assigned successfully!');
-    }
+    //     return back()->with('success', 'Agent assigned successfully!');
+    // }
+
 
     // public function autoTakeover(Request $request)
     // {
@@ -385,53 +537,53 @@ class RoomController extends Controller
         return back()->with('success', 'Tags removed successfully!');
     }
 
-    public function messages($id, Request $request)
-    {
-        $params = [
-            'limit' => $request->input('limit', 15),
-            'offset' => $request->input('offset', 1),
-            'cursor' => $request->input('cursor', '')
-        ];
+    // public function messages($id, Request $request)
+    // {
+    //     $params = [
+    //         'limit' => $request->input('limit', 15),
+    //         'offset' => $request->input('offset', 1),
+    //         'cursor' => $request->input('cursor', '')
+    //     ];
 
-        $url = $this->core_url . '/' . $this->organization_id . '/messages/rooms/' . $id;
+    //     $url = $this->core_url . '/' . $this->organization_id . '/messages/rooms/' . $id;
 
-        try {
-            /** @var \Illuminate\Http\Client\Response $response */
-            $response = Http::withHeaders($this->getHeaders())
-                ->get($url, $params);
+    //     try {
+    //         /** @var \Illuminate\Http\Client\Response $response */
+    //         $response = Http::withHeaders($this->getHeaders())
+    //             ->get($url, $params);
 
-            Log::info('Messages API Response', [
-                'status' => $response->status(),
-                'url' => $url,
-                'params' => $params
-            ]);
+    //         Log::info('Messages API Response', [
+    //             'status' => $response->status(),
+    //             'url' => $url,
+    //             'params' => $params
+    //         ]);
 
-            if (!$response->successful()) {
-                return view('rooms.messages', [
-                    'messages' => ['data' => []],
-                    'id' => $id
-                ]);
-            }
+    //         if (!$response->successful()) {
+    //             return view('rooms.messages', [
+    //                 'messages' => ['data' => []],
+    //                 'id' => $id
+    //             ]);
+    //         }
 
-            $messages = $response->json();
+    //         $messages = $response->json();
 
-            if (isset($messages['data']) && is_array($messages['data'])) {
-                $messages['data'] = array_reverse($messages['data']);
-            }
+    //         if (isset($messages['data']) && is_array($messages['data'])) {
+    //             $messages['data'] = array_reverse($messages['data']);
+    //         }
 
-            return view('rooms.messages', compact('messages', 'id'));
-        } catch (\Exception $e) {
-            Log::error('Exception in messages', [
-                'message' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+    //         return view('rooms.messages', compact('messages', 'id'));
+    //     } catch (\Exception $e) {
+    //         Log::error('Exception in messages', [
+    //             'message' => $e->getMessage(),
+    //             'trace' => $e->getTraceAsString()
+    //         ]);
 
-            return view('rooms.messages', [
-                'messages' => ['data' => []],
-                'id' => $id
-            ]);
-        }
-    }
+    //         return view('rooms.messages', [
+    //             'messages' => ['data' => []],
+    //             'id' => $id
+    //         ]);
+    //     }
+    // }
 
     public function sendMessage(Request $request, $id)
     {
@@ -440,7 +592,6 @@ class RoomController extends Controller
             'type' => 'nullable|string|in:text,image,video,audio,document,voice'
         ]);
 
-        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->post($this->base_url . "/v1/rooms/{$id}/messages", [
                 'message' => $request->message,
@@ -483,11 +634,11 @@ class RoomController extends Controller
             ];
         }
 
-        /** @var \Illuminate\Http\Client\Response $response */
         $response = Http::withHeaders($this->getHeaders())
             ->asMultipart()
             ->post($this->base_url . '/v1/messages/whatsapp', $multipart);
 
+        /** @var \Illuminate\Http\Client\Response $response */
         if ($response->successful()) {
             return back()->with('success', 'WhatsApp message sent successfully!');
         }
