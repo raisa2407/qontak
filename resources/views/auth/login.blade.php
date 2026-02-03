@@ -13,7 +13,7 @@
             <div class="col-md-6 col-lg-5">
                 <div class="card shadow">
                     <div class="card-body p-5">
-                        <div class="text-center mb-4">
+                        <div class="text-c benter mb-4">
                             <h3 class="fw-bold">Qontak Login</h3>
                             <p class="text-muted">Enter your credentials to access</p>
                         </div>
@@ -25,7 +25,7 @@
                         @endif
 
                         @if($errors->any())
-                            <div class="alert alert-danger">
+                            <div class="alert alert-danger"> 
                                 @foreach($errors->all() as $error)
                                     <div>{{ $error }}</div>
                                 @endforeach
